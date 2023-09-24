@@ -411,7 +411,9 @@ pub fn get(user: &mut User, args: Arguments) -> CommandResult<()> {
 
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("0.0.0.0:8888").await.unwrap();
+    let bind = "0.0.0.0:8888";
+    let listener = TcpListener::bind(bind).await.unwrap();
+    eprintln!("Listening on {bind}");
 
     let state = State::default();
     let state = Arc::new(state);
