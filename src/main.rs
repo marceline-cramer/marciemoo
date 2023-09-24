@@ -39,6 +39,13 @@ impl State {
             .unwrap()
     }
 
+    /// Tests if an object exists by ID.
+    pub fn exists(&self, id: usize) -> bool {
+        self.tree
+            .contains_key(format!("object-exists-{id}"))
+            .unwrap()
+    }
+
     /// Lists all of the objects.
     pub fn list(&self) -> Vec<usize> {
         let prefix = "object-exists-";
@@ -75,23 +82,23 @@ impl State {
     }
 
     /// Sets the value of a field.
-    ///
-    /// Returns `false` if the ID was invalid.
-    pub fn set(&self, id: usize, key: &str, val: &str) -> bool {
-        if !self
-            .tree
-            .contains_key(format!("object-exists-{id}"))
-            .unwrap()
-        {
-            return false;
+    pub fn set(&self, id: usize, key: &str, val: &str) {
+        if !self.exists(id) {
+            return;
         }
 
         let key = format!("object-field-{id}-{key}");
         self.tree
             .insert(key.into_bytes(), val.to_string().into_bytes())
             .unwrap();
+    }
 
-        true
+    /// Gets the value of a field.
+    pub fn get(&self, id: usize, key: &str) -> Option<String> {
+        self.tree
+            .get(format!("object-field-{id}-{key}"))
+            .unwrap()
+            .map(|val| String::from_utf8(val.to_vec()).unwrap())
     }
 }
 
@@ -122,6 +129,7 @@ pub struct User {
     pub state: Arc<State>,
     tx: UnboundedSender<String>,
     commands: Commands,
+    quit: bool,
 }
 
 impl User {
@@ -132,8 +140,11 @@ impl User {
 
         tokio::spawn(async move {
             while let Some(message) = rx.recv().await {
-                tcp_tx.write_all(message.as_bytes()).await.unwrap();
-                tcp_tx.write_all(b"\r\n").await.unwrap();
+                if tcp_tx.write_all(message.as_bytes()).await.is_err()
+                    || tcp_tx.write_all(b"\r\n").await.is_err()
+                {
+                    break;
+                }
             }
         });
 
@@ -141,6 +152,7 @@ impl User {
             state,
             tx,
             commands,
+            quit: false,
         }
     }
 
@@ -150,7 +162,7 @@ impl User {
         let mut reader = BufReader::new(rx);
         let mut line_buf = String::new();
 
-        loop {
+        while !self.quit {
             line_buf.clear();
             reader.read_line(&mut line_buf).await.unwrap();
             self.on_line(line_buf.as_str().trim()).await;
@@ -178,8 +190,10 @@ impl User {
         }
     }
 
-    pub fn message(&self, text: &str) {
-        self.tx.send(text.to_string()).unwrap();
+    pub fn message(&mut self, text: &str) {
+        if self.tx.send(text.to_string()).is_err() {
+            self.quit = true;
+        }
     }
 }
 
@@ -250,6 +264,18 @@ impl Arguments {
         }
     }
 
+    pub fn get_id(&self, index: usize) -> CommandResult<usize> {
+        let id = self.get_integer(index)?;
+
+        match id.try_into() {
+            Ok(val) => Ok(val),
+            Err(_) => Err(CommandError::InvalidArgument {
+                index,
+                expected: "object ID".to_string(),
+            }),
+        }
+    }
+
     pub fn get_string(&self, index: usize) -> CommandResult<String> {
         match self.get(index)? {
             Argument::String(val) => Ok(val),
@@ -273,9 +299,13 @@ impl Arguments {
 
 pub type Command = fn(&mut User, Arguments) -> CommandResult<()>;
 
-pub fn help(user: &mut User, args: Arguments) -> CommandResult<()> {
+pub fn help(user: &mut User, _args: Arguments) -> CommandResult<()> {
     user.message("Available commands:");
-    for command in user.commands.0.keys() {
+
+    let mut commands: Vec<_> = user.commands.0.keys().cloned().collect();
+    commands.sort();
+
+    for command in commands {
         user.message(&format!("    {command}"));
     }
 
@@ -288,28 +318,62 @@ pub fn create(user: &mut User, _args: Arguments) -> CommandResult<()> {
     Ok(())
 }
 
-pub fn destroy(user: &mut User, args: Arguments) -> CommandResult<()> {
+pub fn destroy(user: &mut User, _args: Arguments) -> CommandResult<()> {
     user.message("unimplemented");
     Ok(())
 }
 
-pub fn list(user: &mut User, args: Arguments) -> CommandResult<()> {
-    user.message("unimplemented");
+pub fn list(user: &mut User, _args: Arguments) -> CommandResult<()> {
+    user.message("Objects:");
+
+    for id in user.state.list() {
+        user.message(&format!("    #{id}"));
+    }
+
     Ok(())
 }
 
 pub fn show(user: &mut User, args: Arguments) -> CommandResult<()> {
-    user.message("unimplemented");
+    let id = args.get_id(0)?;
+
+    if !user.state.exists(id) {
+        user.message("No such object");
+        return Ok(());
+    }
+
+    user.message(&format!("Fields on object #{id}"));
+
+    for field in user.state.show(id) {
+        user.message(&format!("    {field}"));
+    }
+
     Ok(())
 }
 
 pub fn set(user: &mut User, args: Arguments) -> CommandResult<()> {
-    user.message("unimplemented");
+    let id = args.get_id(0)?;
+    let key = args.get_ident(1)?;
+    let val = args.get_string(2)?;
+
+    if !user.state.exists(id) {
+        user.message("No such object");
+        return Ok(());
+    }
+
+    user.state.set(id, &key, &val);
+
     Ok(())
 }
 
 pub fn get(user: &mut User, args: Arguments) -> CommandResult<()> {
-    user.message("unimplemented");
+    let id = args.get_id(0)?;
+    let key = args.get_ident(1)?;
+
+    match user.state.get(id, &key) {
+        Some(val) => user.message(&format!("value: {:?}", val)),
+        None => user.message("value: <none>"),
+    }
+
     Ok(())
 }
 

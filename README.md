@@ -13,7 +13,6 @@ $ telnet 127.0.0.1 8888
 
 # To-Do
 
-- [ ] `get` command
 - [ ] licensing
 - [ ] server announcements
 - [ ] `say` command
