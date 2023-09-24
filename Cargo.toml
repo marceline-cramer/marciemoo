@@ -1,0 +1,8 @@
+[package]
+name = "marciemoo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sled = "0.34.7"
+tokio = { version = "1.32.0", features = ["full", "net"] }
