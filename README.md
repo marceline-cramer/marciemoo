@@ -13,16 +13,14 @@ $ telnet 127.0.0.1 8888
 
 # To-Do
 
-- [ ] licensing
-- [ ] server announcements
-- [ ] `say` command
-- [ ] base classes
-- [ ] rooms
-- [ ] `look` command
-- [ ] `help <command>` support
-- [ ] user management (creation, deletion, passwords)
-- [ ] `login` command
-- [ ] Rhai scripting
-- [ ] verbs
-- [ ] permissions?
-- [ ] use argon2 for passwords
+- licensing
+- base classes
+- rooms
+- `look` command
+- `help <command>` support
+- user management (creation, deletion, passwords)
+- `login` command
+- Rhai scripting
+- verbs
+- permissions?
+- use argon2 for passwords

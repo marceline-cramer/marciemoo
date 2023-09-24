@@ -4,18 +4,24 @@ use sled::Tree;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
     net::{TcpListener, TcpStream},
-    sync::mpsc::UnboundedSender,
+    sync::{broadcast, mpsc::UnboundedSender},
 };
 
 pub struct State {
     tree: Tree,
+    announcement_tx: broadcast::Sender<String>,
 }
 
 impl Default for State {
     fn default() -> Self {
         let db = sled::open("marciemoo.db").unwrap();
         let tree = db.open_tree("").unwrap();
-        Self { tree }
+        let announcement_tx = broadcast::Sender::new(1024);
+
+        Self {
+            tree,
+            announcement_tx,
+        }
     }
 }
 
@@ -100,6 +106,11 @@ impl State {
             .unwrap()
             .map(|val| String::from_utf8(val.to_vec()).unwrap())
     }
+
+    /// Makes a server announcement.
+    pub fn announce(&self, message: &str) {
+        let _ = self.announcement_tx.send(message.to_string());
+    }
 }
 
 #[derive(Default)]
@@ -109,6 +120,7 @@ impl Commands {
     pub fn new() -> Self {
         let mut cmds = Self::default();
 
+        cmds.insert("say", say);
         cmds.insert("help", help);
         cmds.insert("@create", create);
         cmds.insert("@destroy", destroy);
@@ -144,6 +156,18 @@ impl User {
                     || tcp_tx.write_all(b"\r\n").await.is_err()
                 {
                     break;
+                }
+            }
+        });
+
+        tokio::spawn({
+            let tx = tx.clone();
+            let mut rx = state.announcement_tx.subscribe();
+            async move {
+                while let Ok(message) = rx.recv().await {
+                    if tx.send(message).is_err() {
+                        break;
+                    }
                 }
             }
         });
@@ -241,7 +265,8 @@ impl Arguments {
                 continue;
             }
 
-            unimplemented!("string arguments");
+            // TODO better string parsing
+            args.push(Argument::String(word));
         }
 
         Self(args)
@@ -298,6 +323,13 @@ impl Arguments {
 }
 
 pub type Command = fn(&mut User, Arguments) -> CommandResult<()>;
+
+pub fn say(user: &mut User, args: Arguments) -> CommandResult<()> {
+    let say = args.get_string(0)?;
+    let msg = format!("An unknown fellow says: {}", say);
+    user.state.announce(&msg);
+    Ok(())
+}
 
 pub fn help(user: &mut User, _args: Arguments) -> CommandResult<()> {
     user.message("Available commands:");
