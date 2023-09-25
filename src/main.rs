@@ -1,5 +1,6 @@
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
+use logos::Logos;
 use sled::Tree;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
@@ -194,15 +195,11 @@ impl User {
     }
 
     pub async fn on_line(&mut self, line: &str) {
-        let mut words = line.split(' ');
-        let command = words.next().unwrap();
-        let args: Vec<_> = words.map(ToString::to_string).collect();
-        let args = Arguments::new(args);
+        let (command, args) = line.split_once(' ').unwrap_or((line, ""));
 
         match self.commands.0.get(command) {
             Some(command) => {
-                let result = command(self, args);
-                if let Err(err) = result {
+                if let Err(err) = self.exec_command(*command, args) {
                     let msg = format!("error: {}", err);
                     self.message(&msg);
                 }
@@ -212,6 +209,12 @@ impl User {
                 self.message(&msg);
             }
         }
+    }
+
+    pub fn exec_command(&mut self, command: Command, args: &str) -> CommandResult<()> {
+        let args = Arguments::new(args)?;
+        command(self, args)?;
+        Ok(())
     }
 
     pub fn message(&mut self, text: &str) {
@@ -241,6 +244,19 @@ impl Display for CommandError {
 
 pub type CommandResult<T> = Result<T, CommandError>;
 
+#[derive(Clone, Debug, Logos)]
+#[logos(skip r" +")]
+pub enum ArgumentKind {
+    #[regex("[0-9]+")]
+    Integer,
+
+    #[regex("\"[^\"]*\"")]
+    String,
+
+    #[regex("[a-zA-Z_]+")]
+    Ident,
+}
+
 #[derive(Clone, Debug)]
 pub enum Argument {
     Integer(i32),
@@ -251,25 +267,31 @@ pub enum Argument {
 pub struct Arguments(Vec<Argument>);
 
 impl Arguments {
-    pub fn new(words: Vec<String>) -> Self {
+    pub fn new(words: &str) -> CommandResult<Self> {
+        let mut lexer = ArgumentKind::lexer(words);
         let mut args = Vec::new();
 
-        for word in words {
-            if let Ok(val) = word.parse() {
-                args.push(Argument::Integer(val));
-                continue;
-            }
+        while let Some(arg) = lexer.next() {
+            let index = args.len();
 
-            if !word.starts_with('\"') {
-                args.push(Argument::Ident(word));
-                continue;
-            }
+            let arg = if let Ok(arg) = arg {
+                arg
+            } else {
+                return Err(CommandError::InvalidArgument {
+                    index,
+                    expected: "argument".to_string(),
+                });
+            };
 
-            // TODO better string parsing
-            args.push(Argument::String(word));
+            let slice = lexer.slice();
+            args.push(match arg {
+                ArgumentKind::Integer => Argument::Integer(slice.parse().unwrap()),
+                ArgumentKind::String => Argument::String(slice[1..slice.len() - 1].to_string()),
+                ArgumentKind::Ident => Argument::Ident(slice.to_owned()),
+            });
         }
 
-        Self(args)
+        Ok(Self(args))
     }
 
     pub fn get(&self, index: usize) -> CommandResult<Argument> {

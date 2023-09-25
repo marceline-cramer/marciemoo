@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+logos = "0.13.0"
 sled = "0.34.7"
 tokio = { version = "1.32.0", features = ["full", "net"] }
