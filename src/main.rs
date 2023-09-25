@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, sync::Arc};
+use std::{collections::HashMap, fmt::Display, net::SocketAddr, sync::Arc};
 
 use logos::Logos;
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{broadcast, mpsc::UnboundedSender},
 };
+use tokio_util::sync::CancellationToken;
 
 pub mod script;
 
@@ -39,23 +40,28 @@ impl Value {
 
 pub struct State {
     tree: Tree,
+    shutdown: CancellationToken,
     announcement_tx: broadcast::Sender<String>,
 }
 
-impl Default for State {
-    fn default() -> Self {
+impl State {
+    pub fn new(shutdown: CancellationToken) -> Self {
         let db = sled::open("marciemoo.db").unwrap();
         let tree = db.open_tree("").unwrap();
         let announcement_tx = broadcast::Sender::new(1024);
 
         Self {
             tree,
+            shutdown,
             announcement_tx,
         }
     }
-}
 
-impl State {
+    /// Retrieves a child [CancellationToken] for this state.
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.shutdown.child_token()
+    }
+
     /// Creates a new object, and returns its new ID.
     pub fn create(&self) -> usize {
         self.tree
@@ -236,11 +242,23 @@ impl User {
 
         let mut reader = BufReader::new(rx);
         let mut line_buf = String::new();
+        let shutdown = self.state.shutdown_token();
 
         while !self.quit {
             line_buf.clear();
-            reader.read_line(&mut line_buf).await.unwrap();
-            self.on_line(line_buf.as_str().trim()).await;
+
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    self.quit = true;
+                }
+                result = reader.read_line(&mut line_buf) => {
+                    if result.is_err() {
+                        self.quit = true;
+                    } else {
+                        self.on_line(line_buf.as_str().trim()).await;
+                    }
+                }
+            };
         }
 
         self.state.destroy(self.object);
@@ -562,18 +580,38 @@ async fn main() {
     let listener = TcpListener::bind(bind).await.unwrap();
     eprintln!("Listening on {bind}");
 
-    let state = State::default();
+    let token = CancellationToken::new();
+    let state = State::new(token.child_token());
     let state = Arc::new(state);
 
-    while let Ok((conn, addr)) = listener.accept().await {
-        eprintln!("Connection from {addr}");
+    let shutdown = token.child_token();
+    tokio::spawn(wait_for_interrupt(token));
 
-        let (rx, tx) = tokio::io::split(conn);
-        let user = User::new(state.clone(), tx);
-
-        tokio::spawn(async move {
-            user.run(rx).await;
-            eprintln!("{addr} disconnected");
-        });
+    loop {
+        tokio::select! {
+            incoming = listener.accept() => {
+                let (conn, addr) = incoming.unwrap();
+                accept(state.clone(), conn, addr);
+            }
+            _ = shutdown.cancelled() => {
+                break;
+            }
+        }
     }
+}
+
+fn accept(state: Arc<State>, conn: TcpStream, addr: SocketAddr) {
+    eprintln!("Connection from {addr}");
+    let (rx, tx) = tokio::io::split(conn);
+    let user = User::new(state, tx);
+
+    tokio::spawn(async move {
+        user.run(rx).await;
+        eprintln!("{addr} disconnected");
+    });
+}
+
+async fn wait_for_interrupt(shutdown: CancellationToken) {
+    tokio::signal::ctrl_c().await.unwrap();
+    shutdown.cancel();
 }

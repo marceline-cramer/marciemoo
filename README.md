@@ -13,7 +13,6 @@ $ telnet 127.0.0.1 8888
 
 # To-Do
 
-- catch interrupts + clean shutdown (to remove connected users)
 - licensing
 - base classes
 - rooms
