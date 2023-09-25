@@ -17,11 +17,13 @@ $ telnet 127.0.0.1 8888
 - licensing
 - base classes
 - rooms
-- `look` command
+- command documentation
+- documented commands
 - `help <command>` support
+- permissions?
+- verb arguments
+- figure out verb definition UX
+- code editor for verbs
 - user management (creation, deletion, passwords)
 - `login` command
-- Rhai scripting
-- verbs
-- permissions?
 - use argon2 for passwords

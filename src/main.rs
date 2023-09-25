@@ -9,10 +9,12 @@ use tokio::{
     sync::{broadcast, mpsc::UnboundedSender},
 };
 
+pub mod script;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Value {
     String(String),
-    Integer(i32),
+    Integer(i64),
     Bool(bool),
 }
 
@@ -255,8 +257,7 @@ impl User {
                 }
             }
             None => {
-                let msg = format!("command {:?} not found", command);
-                self.message(&msg);
+                self.exec(command);
             }
         }
     }
@@ -270,6 +271,33 @@ impl User {
     pub fn message(&mut self, text: &str) {
         if self.tx.send(text.to_string()).is_err() {
             self.quit = true;
+        }
+    }
+
+    /// Executes a verb.
+    pub fn exec(&mut self, verb: &str) {
+        let messages = self
+            .state
+            .tree
+            .transaction::<_, _, ()>(|tx| {
+                let key = format!("object-field-{}-{verb}", self.object);
+                let Some(val) = tx.get(key)? else {
+                    return Ok(vec![format!("no such verb")]);
+                };
+
+                let val = serde_json::from_slice(&val).unwrap();
+                let Value::String(src) = val else {
+                    return Ok(vec![format!("field is not executable")]);
+                };
+
+                let runtime = script::Runtime::new(tx, self.object);
+                let messages = runtime.run(&src)?;
+                Ok(messages)
+            })
+            .unwrap();
+
+        for message in messages {
+            self.message(&message);
         }
     }
 }
@@ -316,7 +344,7 @@ pub enum ArgumentKind {
 #[derive(Clone, Debug)]
 pub enum Argument {
     Bool(bool),
-    Integer(i32),
+    Integer(i64),
     String(String),
     Ident(String),
 }
@@ -372,7 +400,7 @@ impl Arguments {
         }
     }
 
-    pub fn get_integer(&self, index: usize) -> CommandResult<i32> {
+    pub fn get_integer(&self, index: usize) -> CommandResult<i64> {
         match self.get(index)? {
             Argument::Integer(val) => Ok(val),
             _ => Err(CommandError::InvalidArgument {
