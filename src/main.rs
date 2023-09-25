@@ -469,7 +469,16 @@ pub fn list(user: &mut User, _args: Arguments) -> CommandResult<()> {
     user.message("Objects:");
 
     for id in user.state.list() {
-        user.message(&format!("    #{id}"));
+        let msg = match user
+            .state
+            .get(id, "name")
+            .and_then(|name| name.as_string().cloned())
+        {
+            Some(name) => format!("    #{:<4} ({})", id, name),
+            None => format!("    #{}", id),
+        };
+
+        user.message(&msg);
     }
 
     Ok(())
