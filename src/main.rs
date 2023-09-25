@@ -53,6 +53,24 @@ impl State {
             .unwrap()
     }
 
+    /// Atomically destroys an object by ID.
+    pub fn destroy(&self, id: usize) -> bool {
+        let key = format!("object-exists-{id}");
+
+        if self.tree.remove(key).unwrap().is_none() {
+            // either this object is already destroyed or another thread is
+            // currently destroying it, so we can exit
+            return false;
+        }
+
+        let prefix = format!("object-field-{id}-");
+        for field in self.tree.scan_prefix(&prefix) {
+            self.tree.remove(field.unwrap().0).unwrap();
+        }
+
+        true
+    }
+
     /// Lists all of the objects.
     pub fn list(&self) -> Vec<usize> {
         let prefix = "object-exists-";
@@ -368,12 +386,19 @@ pub fn help(user: &mut User, _args: Arguments) -> CommandResult<()> {
 
 pub fn create(user: &mut User, _args: Arguments) -> CommandResult<()> {
     let idx = user.state.create();
-    user.message(&format!("Created object #{idx}"));
+    user.message(&format!("created object #{idx}"));
     Ok(())
 }
 
-pub fn destroy(user: &mut User, _args: Arguments) -> CommandResult<()> {
-    user.message("unimplemented");
+pub fn destroy(user: &mut User, args: Arguments) -> CommandResult<()> {
+    let idx = args.get_id(0)?;
+
+    if user.state.destroy(idx) {
+        user.message("success");
+    } else {
+        user.message("no such object");
+    }
+
     Ok(())
 }
 
@@ -391,7 +416,7 @@ pub fn show(user: &mut User, args: Arguments) -> CommandResult<()> {
     let id = args.get_id(0)?;
 
     if !user.state.exists(id) {
-        user.message("No such object");
+        user.message("no such object");
         return Ok(());
     }
 
