@@ -26,6 +26,15 @@ impl Display for Value {
     }
 }
 
+impl Value {
+    pub fn as_string(&self) -> Option<&String> {
+        match self {
+            Value::String(val) => Some(val),
+            _ => None,
+        }
+    }
+}
+
 pub struct State {
     tree: Tree,
     announcement_tx: broadcast::Sender<String>,
@@ -175,6 +184,7 @@ impl Commands {
 
 pub struct User {
     pub state: Arc<State>,
+    object: usize,
     tx: UnboundedSender<String>,
     commands: Commands,
     quit: bool,
@@ -183,6 +193,7 @@ pub struct User {
 impl User {
     pub fn new(state: Arc<State>, mut tcp_tx: WriteHalf<TcpStream>) -> Self {
         let commands = Commands::new();
+        let object = state.create();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -213,11 +224,13 @@ impl User {
             tx,
             commands,
             quit: false,
+            object,
         }
     }
 
     pub async fn run(mut self, rx: ReadHalf<TcpStream>) {
         self.message("Welcome to MarcieMOO!");
+        self.message(&format!("You are object #{}.", self.object));
 
         let mut reader = BufReader::new(rx);
         let mut line_buf = String::new();
@@ -227,6 +240,8 @@ impl User {
             reader.read_line(&mut line_buf).await.unwrap();
             self.on_line(line_buf.as_str().trim()).await;
         }
+
+        self.state.destroy(self.object);
     }
 
     pub async fn on_line(&mut self, line: &str) {
@@ -404,7 +419,17 @@ pub type Command = fn(&mut User, Arguments) -> CommandResult<()>;
 
 pub fn say(user: &mut User, args: Arguments) -> CommandResult<()> {
     let say = args.get_string(0)?;
-    let msg = format!("An unknown fellow says: {}", say);
+
+    let who = match user
+        .state
+        .get(user.object, "name")
+        .and_then(|name| name.as_string().cloned())
+    {
+        Some(name) => name,
+        None => format!("#{}", user.object),
+    };
+
+    let msg = format!("{who} says: {say}");
     user.state.announce(&msg);
     Ok(())
 }
