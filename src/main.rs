@@ -1,12 +1,30 @@
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 use logos::Logos;
+use serde::{Deserialize, Serialize};
 use sled::Tree;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
     net::{TcpListener, TcpStream},
     sync::{broadcast, mpsc::UnboundedSender},
 };
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum Value {
+    String(String),
+    Integer(i32),
+    Bool(bool),
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::String(val) => write!(f, "{:?}", val),
+            Value::Integer(val) => write!(f, "{}", val),
+            Value::Bool(val) => write!(f, "{}", val),
+        }
+    }
+}
 
 pub struct State {
     tree: Tree,
@@ -89,41 +107,40 @@ impl State {
         ids
     }
 
-    /// Shows all the field names on an object.
-    pub fn show(&self, id: usize) -> Vec<String> {
+    /// Shows all the fields on an object.
+    pub fn show(&self, id: usize) -> Vec<(String, Value)> {
         let prefix = format!("object-field-{id}-");
         let prefix_len = prefix.len();
-        let fields = self.tree.scan_prefix(prefix.into_bytes());
+        let field_iter = self.tree.scan_prefix(prefix.into_bytes());
 
-        let mut field_names = Vec::new();
-        for field in fields {
-            let (key, _value) = field.unwrap();
-            let name = key[prefix_len..].to_vec();
-            let name = String::from_utf8(name).unwrap();
-            field_names.push(name);
+        let mut fields = Vec::new();
+        for field in field_iter {
+            let (key, value) = field.unwrap();
+            let key = key[prefix_len..].to_vec();
+            let key = String::from_utf8(key).unwrap();
+            let value = serde_json::from_slice(&value).unwrap();
+            fields.push((key, value));
         }
 
-        field_names
+        fields
     }
 
     /// Sets the value of a field.
-    pub fn set(&self, id: usize, key: &str, val: &str) {
+    pub fn set(&self, id: usize, key: &str, val: Value) {
         if !self.exists(id) {
             return;
         }
 
         let key = format!("object-field-{id}-{key}");
-        self.tree
-            .insert(key.into_bytes(), val.to_string().into_bytes())
-            .unwrap();
+        let val = serde_json::to_vec(&val).unwrap();
+        self.tree.insert(key.into_bytes(), val).unwrap();
     }
 
     /// Gets the value of a field.
-    pub fn get(&self, id: usize, key: &str) -> Option<String> {
-        self.tree
-            .get(format!("object-field-{id}-{key}"))
-            .unwrap()
-            .map(|val| String::from_utf8(val.to_vec()).unwrap())
+    pub fn get(&self, id: usize, key: &str) -> Option<Value> {
+        let val = self.tree.get(format!("object-field-{id}-{key}")).unwrap()?;
+        let val = serde_json::from_slice(&val).unwrap();
+        Some(val)
     }
 
     /// Makes a server announcement.
@@ -273,10 +290,17 @@ pub enum ArgumentKind {
 
     #[regex("[a-zA-Z_]+")]
     Ident,
+
+    #[token("false")]
+    False,
+
+    #[token("true")]
+    True,
 }
 
 #[derive(Clone, Debug)]
 pub enum Argument {
+    Bool(bool),
     Integer(i32),
     String(String),
     Ident(String),
@@ -306,6 +330,8 @@ impl Arguments {
                 ArgumentKind::Integer => Argument::Integer(slice.parse().unwrap()),
                 ArgumentKind::String => Argument::String(slice[1..slice.len() - 1].to_string()),
                 ArgumentKind::Ident => Argument::Ident(slice.to_owned()),
+                ArgumentKind::False => Argument::Bool(false),
+                ArgumentKind::True => Argument::Bool(true),
             });
         }
 
@@ -317,6 +343,18 @@ impl Arguments {
             .get(index)
             .cloned()
             .ok_or(CommandError::MissingArgument { index })
+    }
+
+    pub fn get_value(&self, index: usize) -> CommandResult<Value> {
+        match self.get(index)? {
+            Argument::Integer(val) => Ok(Value::Integer(val)),
+            Argument::Bool(val) => Ok(Value::Bool(val)),
+            Argument::String(val) => Ok(Value::String(val)),
+            _ => Err(CommandError::InvalidArgument {
+                index,
+                expected: "value".to_string(),
+            }),
+        }
     }
 
     pub fn get_integer(&self, index: usize) -> CommandResult<i32> {
@@ -422,8 +460,8 @@ pub fn show(user: &mut User, args: Arguments) -> CommandResult<()> {
 
     user.message(&format!("Fields on object #{id}"));
 
-    for field in user.state.show(id) {
-        user.message(&format!("    {field}"));
+    for (key, val) in user.state.show(id) {
+        user.message(&format!("    {:<20}{}", key, val));
     }
 
     Ok(())
@@ -432,14 +470,14 @@ pub fn show(user: &mut User, args: Arguments) -> CommandResult<()> {
 pub fn set(user: &mut User, args: Arguments) -> CommandResult<()> {
     let id = args.get_id(0)?;
     let key = args.get_ident(1)?;
-    let val = args.get_string(2)?;
+    let val = args.get_value(2)?;
 
     if !user.state.exists(id) {
         user.message("No such object");
         return Ok(());
     }
 
-    user.state.set(id, &key, &val);
+    user.state.set(id, &key, val);
 
     Ok(())
 }
