@@ -13,16 +13,19 @@ $ telnet 127.0.0.1 8888
 
 # To-Do
 
-- licensing
-- base classes
-- rooms
-- command documentation
-- documented commands
-- `help <command>` support
-- permissions?
 - verb arguments
 - figure out verb definition UX
 - code editor for verbs
+- licensing
+- base classes
+- more sandboxed Rhai imports
+- containers
+- rooms
+- command documentation
+- document existing commands
+- `help <command>` support
 - user management (creation, deletion, passwords)
-- `login` command
 - use argon2 for passwords
+- `login` command
+- programmers vs. wizards vs. users
+- permissions
