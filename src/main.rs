@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt::Display, net::SocketAddr, sync::Arc};
 
 use logos::Logos;
+use script::ScriptOutput;
 use serde::{Deserialize, Serialize};
 use sled::Tree;
 use tokio::{
@@ -238,6 +239,7 @@ impl User {
 
     pub async fn run(mut self, rx: ReadHalf<TcpStream>) {
         self.message("Welcome to MarcieMOO!");
+        self.message("Type \"help\".");
         self.message(&format!("You are object #{}.", self.object));
 
         let mut reader = BufReader::new(rx);
@@ -294,27 +296,31 @@ impl User {
 
     /// Executes a verb.
     pub fn exec(&mut self, verb: &str) {
-        let messages = self
+        let output = self
             .state
             .tree
             .transaction::<_, _, ()>(|tx| {
                 let key = format!("object-field-{}-{verb}", self.object);
                 let Some(val) = tx.get(key)? else {
-                    return Ok(vec![format!("no such verb")]);
+                    return Ok(ScriptOutput::message("no such verb"));
                 };
 
                 let val = serde_json::from_slice(&val).unwrap();
                 let Value::String(src) = val else {
-                    return Ok(vec![format!("field is not executable")]);
+                    return Ok(ScriptOutput::message("no such verb"));
                 };
 
                 let runtime = script::Runtime::new(tx, self.object);
-                let messages = runtime.run(&src)?;
-                Ok(messages)
+                let output = runtime.run(&src)?;
+                Ok(output)
             })
             .unwrap();
 
-        for message in messages {
+        for announcement in output.announcements {
+            self.state.announce(&announcement);
+        }
+
+        for message in output.messages {
             self.message(&message);
         }
     }

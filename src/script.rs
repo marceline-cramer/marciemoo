@@ -1,4 +1,8 @@
-use std::{rc::Rc, str::FromStr, sync::Mutex};
+use std::{
+    rc::Rc,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 use rhai::{Dynamic, Engine, EvalAltResult, Scope};
 use sled::transaction::{TransactionalTree, UnabortableTransactionError};
@@ -77,6 +81,7 @@ impl Object {
 pub struct Runtime {
     engine: Engine,
     self_object: Object,
+    output: Arc<Mutex<ScriptOutput>>,
 }
 
 impl Runtime {
@@ -84,7 +89,8 @@ impl Runtime {
         let tx: &'static TransactionalTree = unsafe { std::mem::transmute(tx) };
         let error = Error::default();
 
-        let mut engine = Engine::new();
+        let mut engine = Engine::new_raw();
+        let output: Arc<Mutex<ScriptOutput>> = Default::default();
 
         engine
             .register_type::<Object>()
@@ -102,6 +108,20 @@ impl Runtime {
             }
         });
 
+        engine.register_fn("print", {
+            let output = output.clone();
+            move |message: String| {
+                output.lock().unwrap().messages.push(message);
+            }
+        });
+
+        engine.register_fn("announce", {
+            let output = output.clone();
+            move |message: String| {
+                output.lock().unwrap().announcements.push(message);
+            }
+        });
+
         let self_object = Object {
             id: self_id,
             tx,
@@ -110,25 +130,47 @@ impl Runtime {
 
         Self {
             engine,
+            output,
             self_object,
         }
     }
 
-    pub fn run(&self, src: &str) -> Result<Vec<String>, UnabortableTransactionError> {
+    pub fn run(&self, src: &str) -> Result<ScriptOutput, UnabortableTransactionError> {
         self.self_object.error.lock().unwrap().take();
 
         let mut scope = Scope::new();
         scope.set_value("self", self.self_object.clone());
+
         let result = self.engine.eval_with_scope::<()>(&mut scope, src);
 
         if let Some(err) = self.self_object.error.lock().unwrap().take() {
             return Err(err);
         }
 
+        let mut output: ScriptOutput = self.output.lock().unwrap().to_owned();
+
         if let Some(err) = result.err() {
-            Ok(vec![format!("script error: {}", err)])
-        } else {
-            Ok(vec![])
+            output.messages.push(format!("script error: {}", err));
+        }
+
+        Ok(output)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ScriptOutput {
+    /// Messages addressed to the subject.
+    pub messages: Vec<String>,
+
+    /// Server-wide announcements.
+    pub announcements: Vec<String>,
+}
+
+impl ScriptOutput {
+    pub fn message(message: impl ToString) -> Self {
+        Self {
+            messages: vec![message.to_string()],
+            ..Default::default()
         }
     }
 }
